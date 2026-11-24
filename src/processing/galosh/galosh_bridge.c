@@ -255,6 +255,28 @@ void galosh_upsample_frame_horizontal_cfa(const float *src, float *dst,
     galosh_upsample_horizontal_cfa(src, dst, width, height, factor);
 }
 
+/* Reusable persistent buffer cache for GALOSH frames under galosh_mutex. */
+static float *g_galosh_in_buf = NULL;
+static size_t g_galosh_in_cap = 0;
+static float *g_galosh_out_buf = NULL;
+static size_t g_galosh_out_cap = 0;
+static float *g_galosh_up_in_buf = NULL;
+static size_t g_galosh_up_in_cap = 0;
+static float *g_galosh_up_out_buf = NULL;
+static size_t g_galosh_up_out_cap = 0;
+
+static float *galosh_acquire_buf(float **buf_ptr, size_t *cap_ptr, size_t count)
+{
+    if (*cap_ptr < count || !*buf_ptr)
+    {
+        float *new_buf = (float *)realloc(*buf_ptr, count * sizeof(float));
+        if (!new_buf) return NULL;
+        *buf_ptr = new_buf;
+        *cap_ptr = count;
+    }
+    return *buf_ptr;
+}
+
 int galosh_bayer_denoise_ex(processingObject_t *processing,
                             float *frame,
                             int width, int height,
@@ -300,10 +322,14 @@ int galosh_bayer_denoise_ex(processingObject_t *processing,
     const int up_height = padded_height;
     const size_t up_count = (size_t)up_width * up_height;
 
-    float *in = (float *)malloc(padded_count * sizeof(float));
-    if (!in) return 1;
-
     pthread_mutex_lock(&galosh_mutex);
+
+    float *in = galosh_acquire_buf(&g_galosh_in_buf, &g_galosh_in_cap, padded_count);
+    if (!in)
+    {
+        pthread_mutex_unlock(&galosh_mutex);
+        return 1;
+    }
 
     /* Normalize into the padded buffer. */
     galosh_float_to_normalized(frame, in, width, height, padded_width,
@@ -337,7 +363,7 @@ int galosh_bayer_denoise_ex(processingObject_t *processing,
 
     if (anamorphic_x == 1)
     {
-        float *out = (float *)malloc(padded_count * sizeof(float));
+        float *out = galosh_acquire_buf(&g_galosh_out_buf, &g_galosh_out_cap, padded_count);
         if (out)
         {
             result = galosh_run_backend(processing, in, out,
@@ -349,22 +375,16 @@ int galosh_bayer_denoise_ex(processingObject_t *processing,
                 galosh_normalized_to_float(out, frame, width, height,
                                            padded_width, black_level, white_level);
             }
-            free(out);
         }
     }
     else
     {
-        float *up_in = (float *)malloc(up_count * sizeof(float));
-        float *up_out = (float *)malloc(up_count * sizeof(float));
+        float *up_in = galosh_acquire_buf(&g_galosh_up_in_buf, &g_galosh_up_in_cap, up_count);
+        float *up_out = galosh_acquire_buf(&g_galosh_up_out_buf, &g_galosh_up_out_cap, up_count);
         if (up_in && up_out)
         {
             galosh_upsample_horizontal_cfa(in, up_in, padded_width, padded_height,
                                            anamorphic_x);
-            /* The original-grid buffer is no longer needed and is the
-             * smaller one; release it before the backend allocates its own
-             * working set. */
-            free(in);
-            in = NULL;
 
             result = galosh_run_backend(processing, up_in, up_out,
                                         up_width, up_height,
@@ -372,7 +392,7 @@ int galosh_bayer_denoise_ex(processingObject_t *processing,
                                         chroma_bw);
             if (result == 0)
             {
-                float *out = (float *)malloc(padded_count * sizeof(float));
+                float *out = galosh_acquire_buf(&g_galosh_out_buf, &g_galosh_out_cap, padded_count);
                 if (out)
                 {
                     galosh_downsample_horizontal_cfa(up_out, out,
@@ -380,7 +400,6 @@ int galosh_bayer_denoise_ex(processingObject_t *processing,
                                                      up_width, anamorphic_x);
                     galosh_normalized_to_float(out, frame, width, height,
                                                padded_width, black_level, white_level);
-                    free(out);
                 }
                 else
                 {
@@ -388,13 +407,9 @@ int galosh_bayer_denoise_ex(processingObject_t *processing,
                 }
             }
         }
-        free(up_in);
-        free(up_out);
     }
 
     pthread_mutex_unlock(&galosh_mutex);
-
-    free(in);
     return result;
 }
 
@@ -413,5 +428,12 @@ int galosh_bayer_denoise(processingObject_t *processing,
 
 void galosh_shutdown(void)
 {
+    pthread_mutex_lock(&galosh_mutex);
+    free(g_galosh_in_buf); g_galosh_in_buf = NULL; g_galosh_in_cap = 0;
+    free(g_galosh_out_buf); g_galosh_out_buf = NULL; g_galosh_out_cap = 0;
+    free(g_galosh_up_in_buf); g_galosh_up_in_buf = NULL; g_galosh_up_in_cap = 0;
+    free(g_galosh_up_out_buf); g_galosh_up_out_buf = NULL; g_galosh_up_out_cap = 0;
+    pthread_mutex_unlock(&galosh_mutex);
+
     galosh_vulkan_shutdown();
 }

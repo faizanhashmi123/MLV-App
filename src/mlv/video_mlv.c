@@ -716,43 +716,36 @@ void getMlvRawFrameFloat(mlvObject_t * video, uint64_t frameIndex, float * outpu
     free(unpacked_frame);
 }
 
-/* Levels for the GALOSH bridge.  The DNG writer stores the native sensor
- * levels in llrawproc->dng_black_level/white_level and the corresponding bit
- * depth in dng_bit_depth; getMlvRawFrameFloat() shifts the raw image to
- * 16-bit.  Use the same pair so GALOSH sees exactly the normalization the
- * reference DNG tool uses (no processing->white_level 0.993 highlight bias). */
+/* Levels for the GALOSH bridge.
+ * Derive directly from raw_info so the 16-bit normalization levels remain
+ * rock-solid and immutable. This prevents level flip-flops when Dual ISO
+ * or raw corrections dynamically modify llrawproc state across frames. */
 void getMlvGaloshRawLevels(mlvObject_t * video, float * black_level,
                            float * white_level)
 {
     float black = 0.0f;
-    float white = 1.0f;
+    float white = 65535.0f;
 
-    if (video && video->llrawproc)
+    if (video)
     {
-        int bits = video->llrawproc->dng_bit_depth;
-        if (bits <= 0 || bits > 16) bits = video->RAWI.raw_info.bits_per_pixel;
-        if (bits <= 0 || bits > 16) bits = 16;
-
+        int bits = video->RAWI.raw_info.bits_per_pixel;
+        if (bits <= 0 || bits > 16) bits = 14;
         const int shift = 16 - bits;
-        black = (float)(video->llrawproc->dng_black_level << shift);
-        white = (float)(video->llrawproc->dng_white_level << shift);
 
-        if (!(white > black) && video->processing)
-        {
-            black = video->processing->black_level;
-            white = video->processing->white_level;
-        }
+        black = (float)(video->RAWI.raw_info.black_level << shift);
+        white = (float)(video->RAWI.raw_info.white_level << shift);
     }
-    else if (video && video->processing)
+
+    if (!(white > black) && video && video->processing)
     {
         black = video->processing->black_level;
-        white = video->processing->white_level;
+        white = (float)video->processing->white_level;
     }
 
     if (!(white > black))
     {
         black = 0.0f;
-        white = 1.0f;
+        white = 65535.0f;
     }
 
     *black_level = black;

@@ -6808,12 +6808,6 @@ void MainWindow::galoshStoreModelInReceipt( ReceiptSettings *receipt )
         receipt->setGaloshSigmaSq( m_pProcessingObject->galoshSigmaSq );
         receipt->setGaloshNoiseValid( true );
     }
-    else
-    {
-        receipt->setGaloshAlpha( 0.0f );
-        receipt->setGaloshSigmaSq( 0.0f );
-        receipt->setGaloshNoiseValid( false );
-    }
 }
 
 void MainWindow::galoshEstimateNoiseModel( int frameIndex, ReceiptSettings *receipt )
